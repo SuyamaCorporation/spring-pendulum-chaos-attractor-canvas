@@ -1,0 +1,267 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Spring Pendulum Chaos Attractor</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+  body { background:#1a1a2e; color:#e2e8f0; font-family:system-ui,sans-serif; }
+  canvas { border-radius:12px; display:block; }
+  label { font-size:12px; color:#94a3b8; }
+  .panel { background:#0f172a; border:1px solid #334155; border-radius:12px; padding:16px; }
+  input[type=range] { accent-color:#22d3ee; }
+  .tab-active { background:#22d3ee; color:#0f172a; font-weight:700; }
+  .tab-inactive { background:#1e293b; color:#94a3b8; }
+</style>
+</head>
+<body class="min-h-screen p-4">
+<div class="max-w-5xl mx-auto">
+  <h1 class="text-2xl font-bold text-center text-cyan-300 mb-1">🌀 Spring Pendulum Chaos Attractor</h1>
+  <p class="text-gray-400 text-sm text-center mb-4">RK4 integration • Double chaos mode • Phase space trails</p>
+
+  <!-- Tabs -->
+  <div class="flex gap-2 mb-4 justify-center">
+    <button id="tabPendulum" class="tab-active px-5 py-2 rounded-lg text-sm" onclick="setTab('pendulum')" aria-label="Pendulum view tab">🔵 Pendulum</button>
+    <button id="tabAttractor" class="tab-inactive px-5 py-2 rounded-lg text-sm" onclick="setTab('attractor')" aria-label="Attractor phase space tab">🌈 Attractor</button>
+  </div>
+
+  <div class="flex flex-col lg:flex-row gap-4">
+    <!-- Canvas -->
+    <div class="flex-1">
+      <canvas id="pendCanvas" width="480" height="380" aria-label="Spring pendulum animation" style="display:block"></canvas>
+      <canvas id="attrCanvas" width="480" height="380" aria-label="Phase space attractor" style="display:none"></canvas>
+    </div>
+
+    <!-- Controls -->
+    <div class="panel w-full lg:w-64 space-y-4">
+      <div>
+        <label for="kSlider">Spring k: <span id="kVal">10</span> N/m</label>
+        <input type="range" id="kSlider" min="2" max="30" step="0.5" value="10" class="w-full" aria-label="Spring constant">
+      </div>
+      <div>
+        <label for="mSlider">Mass: <span id="mVal">1.0</span> kg</label>
+        <input type="range" id="mSlider" min="0.2" max="3" step="0.1" value="1" class="w-full" aria-label="Mass">
+      </div>
+      <div>
+        <label for="dampSlider">Damping: <span id="dampVal">0.00</span></label>
+        <input type="range" id="dampSlider" min="0" max="0.1" step="0.005" value="0" class="w-full" aria-label="Damping coefficient">
+      </div>
+      <div>
+        <label for="speedSlider">Speed: <span id="speedVal">1×</span></label>
+        <input type="range" id="speedSlider" min="1" max="10" step="1" value="1" class="w-full" aria-label="Simulation speed">
+      </div>
+      <div>
+        <label for="trailOpacity">Trail Opacity: <span id="trailOpVal">0.6</span></label>
+        <input type="range" id="trailOpacity" min="0.1" max="1" step="0.05" value="0.6" class="w-full" aria-label="Trail opacity">
+      </div>
+      <button onclick="resetSim()" class="w-full py-2 rounded-lg text-sm font-semibold" style="background:#334155;color:#e2e8f0" aria-label="Reset simulation with perturbation">↺ Reset + Perturb</button>
+      <button onclick="clearTrails()" class="w-full py-2 rounded-lg text-sm font-semibold" style="background:#334155;color:#e2e8f0" aria-label="Clear attractor trails">🗑 Clear Trails</button>
+
+      <!-- State display -->
+      <div class="text-xs space-y-1 text-gray-400 pt-2 border-t border-gray-700">
+        <div>θ: <span id="dispTheta">0.00</span> rad</div>
+        <div>r: <span id="dispR">1.00</span> m</div>
+        <div>Energy: <span id="dispE">0.00</span> J</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+function escapeHtml(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');}
+
+const pendCanvas = document.getElementById('pendCanvas');
+const attrCanvas = document.getElementById('attrCanvas');
+const pCtx = pendCanvas.getContext('2d');
+const aCtx = attrCanvas.getContext('2d');
+
+let tab = 'pendulum';
+let running = true;
+
+// Params
+let k = 10, mass = 1, damp = 0, simSpeed = 1, trailOp = 0.6;
+const g = 9.81, L0 = 1.0;
+
+// State: [r, dr, theta, dtheta]
+let S = [1.3, 0, 0.6, 0];
+const DT = 0.002;
+
+// Attractor trail
+let trail = [];
+let hue = 0;
+
+function resetSim() {
+  S = [L0 + 0.3 + (Math.random()-0.5)*0.3, (Math.random()-0.5)*0.2, 0.6+(Math.random()-0.5)*0.3, (Math.random()-0.5)*0.1];
+  trail = [];
+  aCtx.clearRect(0, 0, attrCanvas.width, attrCanvas.height);
+}
+
+function clearTrails() {
+  trail = [];
+  aCtx.clearRect(0, 0, attrCanvas.width, attrCanvas.height);
+}
+
+// Equations of motion for spring pendulum
+// r'' = r*theta'^2 - g*cos(theta) + (k/m)*(L0-r) - damp*dr
+// theta'' = (-g*sin(theta)/r) - (2*dr*dtheta/r) - damp*dtheta
+function deriv(s) {
+  const [r, dr, th, dth] = s;
+  const ddr = r*dth*dth - g*Math.cos(th) - (k/mass)*(r-L0) - damp*dr;
+  const ddth = (-g*Math.sin(th)/r) - (2*dr*dth/r) - damp*dth;
+  return [dr, ddr, dth, ddth];
+}
+
+function rk4(s, dt) {
+  const k1 = deriv(s);
+  const k2 = deriv(s.map((v,i) => v + dt*k1[i]/2));
+  const k3 = deriv(s.map((v,i) => v + dt*k2[i]/2));
+  const k4 = deriv(s.map((v,i) => v + dt*k3[i]));
+  return s.map((v,i) => v + dt*(k1[i]+2*k2[i]+2*k3[i]+k4[i])/6);
+}
+
+function energy() {
+  const [r, dr, th, dth] = S;
+  const vx = dr*Math.sin(th) + r*dth*Math.cos(th);
+  const vy = dr*Math.cos(th) - r*dth*Math.sin(th);
+  const KE = 0.5*mass*(vx*vx+vy*vy);
+  const PE_grav = -mass*g*r*Math.cos(th);
+  const PE_spring = 0.5*k*(r-L0)*(r-L0);
+  return KE + PE_grav + PE_spring;
+}
+
+function drawPendulum() {
+  const W = pendCanvas.width, H = pendCanvas.height;
+  pCtx.clearRect(0,0,W,H);
+  pCtx.fillStyle = '#0f172a';
+  pCtx.fillRect(0,0,W,H);
+
+  const [r, , th] = S;
+  // Pivot at center-top
+  const px = W/2, py = 60;
+  const scale = 100; // pixels per meter
+  const mx = px + Math.sin(th)*r*scale;
+  const my = py + Math.cos(th)*r*scale;
+
+  // Draw spring as zigzag
+  const steps = 16;
+  const dx = (mx-px)/steps, dy = (my-py)/steps;
+  const perp = {x:-dy, y:dx};
+  const plen = Math.sqrt(perp.x*perp.x+perp.y*perp.y) || 1;
+  const pn = {x:perp.x/plen*10, y:perp.y/plen*10};
+  pCtx.beginPath();
+  pCtx.moveTo(px, py);
+  for (let i = 1; i <= steps; i++) {
+    const cx2 = px + dx*i + (i%2===0?1:-1)*pn.x;
+    const cy2 = py + dy*i + (i%2===0?1:-1)*pn.y;
+    pCtx.lineTo(cx2, cy2);
+  }
+  pCtx.strokeStyle = '#22d3ee';
+  pCtx.lineWidth = 2;
+  pCtx.stroke();
+
+  // Pivot
+  pCtx.beginPath();
+  pCtx.arc(px, py, 8, 0, Math.PI*2);
+  pCtx.fillStyle = '#64748b';
+  pCtx.fill();
+
+  // Mass
+  const mr = 14;
+  pCtx.beginPath();
+  pCtx.arc(mx, my, mr, 0, Math.PI*2);
+  const g2 = pCtx.createRadialGradient(mx-3,my-3,2,mx,my,mr);
+  g2.addColorStop(0,'#67e8f9');
+  g2.addColorStop(1,'#0e7490');
+  pCtx.fillStyle = g2;
+  pCtx.fill();
+  pCtx.strokeStyle = '#fff';
+  pCtx.lineWidth = 1;
+  pCtx.stroke();
+
+  // Angle arc
+  pCtx.beginPath();
+  pCtx.arc(px, py, 35, -Math.PI/2, th-Math.PI/2);
+  pCtx.strokeStyle = 'rgba(249,115,22,0.7)';
+  pCtx.lineWidth = 2;
+  pCtx.stroke();
+
+  // Labels
+  pCtx.fillStyle = '#94a3b8';
+  pCtx.font = '12px monospace';
+  pCtx.fillText(`θ=${(th*180/Math.PI).toFixed(1)}°`, 12, 24);
+  pCtx.fillText(`r=${S[0].toFixed(2)}m`, 12, 40);
+  pCtx.fillText(`E=${energy().toFixed(2)}J`, 12, 56);
+}
+
+function updateAttractor() {
+  const [r, dr, th, dth] = S;
+  const W = attrCanvas.width, H = attrCanvas.height;
+  // Phase space: θ (x) vs r (y)
+  const normX = (th / (Math.PI*2) + 0.5) * W;
+  const normY = H - ((r - 0.3) / 2.5) * H;
+  trail.push({x: normX, y: normY, h: hue});
+  hue = (hue + 0.3) % 360;
+  if (trail.length > 50000) trail.splice(0, 1000);
+
+  if (tab === 'attractor') {
+    aCtx.globalAlpha = trailOp;
+    aCtx.fillStyle = `hsl(${hue},90%,60%)`;
+    aCtx.fillRect(normX, normY, 1.5, 1.5);
+    aCtx.globalAlpha = 1;
+  }
+}
+
+function setTab(t) {
+  tab = t;
+  document.getElementById('tabPendulum').className = (t==='pendulum'?'tab-active':'tab-inactive')+' px-5 py-2 rounded-lg text-sm';
+  document.getElementById('tabAttractor').className = (t==='attractor'?'tab-active':'tab-inactive')+' px-5 py-2 rounded-lg text-sm';
+  pendCanvas.style.display = t === 'pendulum' ? 'block' : 'none';
+  attrCanvas.style.display = t === 'attractor' ? 'block' : 'none';
+  // Replay trails on switch
+  if (t === 'attractor') {
+    aCtx.fillStyle = '#0f172a';
+    aCtx.fillRect(0,0,attrCanvas.width,attrCanvas.height);
+    aCtx.globalAlpha = trailOp;
+    trail.forEach(p => {
+      aCtx.fillStyle = `hsl(${p.h},90%,60%)`;
+      aCtx.fillRect(p.x, p.y, 1.5, 1.5);
+    });
+    aCtx.globalAlpha = 1;
+  }
+}
+
+// Bind controls
+document.getElementById('kSlider').addEventListener('input', function() { k=parseFloat(this.value); document.getElementById('kVal').textContent=this.value; });
+document.getElementById('mSlider').addEventListener('input', function() { mass=parseFloat(this.value); document.getElementById('mVal').textContent=parseFloat(this.value).toFixed(1); });
+document.getElementById('dampSlider').addEventListener('input', function() { damp=parseFloat(this.value); document.getElementById('dampVal').textContent=parseFloat(this.value).toFixed(3); });
+document.getElementById('speedSlider').addEventListener('input', function() { simSpeed=parseInt(this.value); document.getElementById('speedVal').textContent=this.value+'×'; });
+document.getElementById('trailOpacity').addEventListener('input', function() { trailOp=parseFloat(this.value); document.getElementById('trailOpVal').textContent=this.value; });
+
+let stepAcc = 0;
+let lastTs = null;
+function loop(ts) {
+  if (!lastTs) lastTs = ts;
+  const dt = Math.min((ts-lastTs)/1000, 0.05);
+  lastTs = ts;
+  const steps = simSpeed * 10;
+  for (let i = 0; i < steps; i++) {
+    S = rk4(S, DT);
+    // Prevent r going negative
+    if (S[0] < 0.05) { S[0] = 0.05; if (S[1] < 0) S[1] = 0; }
+  }
+  updateAttractor();
+  if (tab === 'pendulum') drawPendulum();
+  document.getElementById('dispTheta').textContent = S[2].toFixed(3);
+  document.getElementById('dispR').textContent = S[0].toFixed(3);
+  document.getElementById('dispE').textContent = energy().toFixed(2);
+  requestAnimationFrame(loop);
+}
+
+// Init attractor bg
+aCtx.fillStyle = '#0f172a';
+aCtx.fillRect(0,0,attrCanvas.width,attrCanvas.height);
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
